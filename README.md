@@ -10,7 +10,7 @@ Paweł Motyka<sup>1</sup>, Martin Grund<sup>2</sup>,  Norman Forschack<sup>2</su
 <sup>5</sup>Clinic for Cognitive Neurology, University Hospital Leipzig, 04103 Leipzig, Germany <br/>
 <sup>6</sup>Faculty of Medicine, University of Leipzig, 40103 Leipzig, Germany <br/>
 
-Corresponding author: Paweł Motyka, e-mail: pawel.motyka[-at-]psych.uw.edu.pl <br/>
+Corresponding author: Paweł Motyka, e-mail: pawel.motyka{at}psych.uw.edu.pl <br/>
 <br/>
 
 Abstract:
