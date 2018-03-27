@@ -1,6 +1,6 @@
 # Perceptual awareness for somatosensory stimuli varies across the cardiac cycle
 
-Paweł Motyka<sup>1</sup>, Martin Grund<sup>2</sup>,  Norman Forschack<sup>2</sup>,<sup>3</sup>, Esra Al<sup>2</sup>,<sup>4</sup>, Arno Villringer<sup>2</sup>,<sup>4</sup>,<sup>5</sup>, and Michael Gaebler<sup>2</sup>,<sup>4</sup>,<sup>6</sup>
+Paweł Motyka<sup>1</sup>, Martin Grund<sup>2</sup>,  Norman Forschack<sup>2</sup><sup>,</sup><sup>3</sup>, Esra Al<sup>2</sup><sup>,</sup><sup>4</sup>, Arno Villringer<sup>2</sup><sup>,</sup><sup>4</sup><sup>,</sup><sup>5</sup>, and Michael Gaebler<sup>2</sup><sup>,</sup><sup>4</sup><sup>,</sup><sup>6</sup>
 
 <sup>1</sup>Faculty of Psychology, University of Warsaw, 00-183 Warsaw, Poland 
 <sup>2</sup>Max Planck Institute for Human Cognitive and Brain Sciences, 04103 Leipzig, Germany 
