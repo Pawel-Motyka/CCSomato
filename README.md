@@ -25,6 +25,12 @@ Abstract:
 <br/>
 
 
+Descripotion of the repository: 
+
+_dataframes
+_scripts
+_figures
+
 If you want to run your own preprocessing (performed in sections 1-3 in the script for analysis), please contact the corresponding author for the raw data (output from Kubios analysis for each participant). Otherwise you can load the processed data "CCSomato_processed_data(output_from_section_3)" using the commands placed in the end of section 3.
 
 
