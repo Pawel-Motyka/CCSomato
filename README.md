@@ -1,6 +1,6 @@
 ## Interactions between cardiac activity and conscious somatosensory perception
 
-Paweł Motyka<sup>1</sup>,<sup>2</sup>, Martin Grund<sup>2</sup>, Norman Forschack<sup>2</sup><sup>,</sup><sup>3</sup>, Esra Al<sup>2</sup><sup>,</sup><sup>4</sup>, Arno Villringer<sup>2</sup><sup>,</sup><sup>4</sup><sup>,</sup><sup>5</sup>, and Michael Gaebler<sup>2</sup><sup>,</sup><sup>4</sup><sup>,</sup><sup>6</sup>
+Paweł Motyka<sup>1</sup><sup>,</sup><sup>2</sup>, Martin Grund<sup>2</sup>, Norman Forschack<sup>2</sup><sup>,</sup><sup>3</sup>, Esra Al<sup>2</sup><sup>,</sup><sup>4</sup>, Arno Villringer<sup>2</sup><sup>,</sup><sup>4</sup><sup>,</sup><sup>5</sup>, and Michael Gaebler<sup>2</sup><sup>,</sup><sup>4</sup><sup>,</sup><sup>6</sup>
 <br/>
 <br/>
 <sup>1</sup>Faculty of Psychology, University of Warsaw, 00-183 Warsaw, Poland <br/>
@@ -20,7 +20,8 @@ Fluctuations in the heart’s activity can modulate the access of external stimu
 
 <br/>
 
+Data analysis:
 
-If you want to run your own preprocessing (performed in sections 1-3 of the script for analysis), please contact the corresponding author for the raw data (output from Kubios analysis for each participant). Otherwise you can load the processed data into 
+Folder "_scripts" contains the the codes used for the main and supplementary analyses. If you want to run your own preprocessing (performed in sections 1-3 of the script for analysis), please contact the corresponding author for the raw data (output from Kubios analysis for each participant). Otherwise you can load the processed data into 
 
 
