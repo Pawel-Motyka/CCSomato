@@ -1,0 +1,1233 @@
+---
+title: | 
+    | Interactions between cardiac activity
+    | and conscious somatosensory perception 
+author: <br> <font size="4"> Pawe³ Motyka (pawel.motyka@psych.uw.edu.pl) </font> <br> 
+date: <font size="3"> Semptember 25th 2018  </font>
+output: html_document
+chunk_output_type: console
+---
+
+&nbsp;
+<font size="3">
+**List of sections**:
+
+
+1. Load required packages and preprocess behavioral data [S1](#S1)
+2. Determine the relative positions of stimulus onsets within the cardiac cycle [S2](#S2)
+3. Determine the length of individual cardiac phases (T-wave end detection algorithm) [S3](#S3)
+4. Show descriptive statistics of behavioral data [S4](#S4)
+5. Test unifromity of stimulus onsets distribution within the cardiac cycle for each participant [S5](#S5)
+6. Test unifromity of hits and misses distributions within the cardiac cycle (Figure 2AB) [S6](#S6)
+7. Filter out outlying systole intervals [S7](#S7)
+8. Test differences in mean hit rates between systole and diastole (Figure 3) [S8](#S8)
+9. Test Pre- and post-stimulus heart rate for hits and misses (Figure 4A) [S9](#S9)
+10. Test differences in the extent of cardiac deceleration between hits and misses (Figure 4B) [S10](#S10) </font>
+
+&nbsp;
+<a name="S1"></a>
+&nbsp;
+
+<font size="3">
+**1. Load required packages and preprocess behavioral data** </font>
+
+```{r, results = "hide", message = FALSE}
+
+# Specify data directory
+data_dir <- 'N:/CCSomato_data'
+setwd(data_dir)
+
+# load behavioral data
+data <- read.table("CCSomato_trials.txt", header = TRUE, sep = "\t", fill = TRUE, stringsAsFactors = FALSE)
+
+## description of the crucial variables in behavioral data file:
+  # "stim_type" - stimulus type (1 - near-treshold, 0 - catch trial)
+  # "resp1" - response (1 - "yes", 0 - "no") 
+  # "resp1_t" - response time [in seconds]
+  # "stim_onset" - stimulus onset time (in seconds)
+  # "ao_error": specfiying whether recording error has occurred (1 - "yes", 0 - "no") - while collecting data from 12th participant, the data acquisition card produced an error (and stopped the recording). We recorded the occurence of the error, which happened in 15 trials that have been later excluded. For the first 11 participants we assigned value 0 as no error has occurred.
+data$ao_error[is.na(data$ao_error)] <- 0 
+
+# exclude participant 01 (one of the authors tested during the final pilot)
+data <- data[!(data$ID == 1),] 
+
+# exclude one block due to an ECG recording error in this block
+data <- data[!(data$ID == 4 & data$block == 1), ] 
+
+
+## Classify responses
+
+# classify as a hit in case of the stimulus present and "yes" response
+data$resp_class[data$stim_type == 1 & data$resp1 == 1] <- 'hit' 
+
+# classify as a miss in case of the stimulus present and "no" response
+data$resp_class[data$stim_type == 1 & data$resp1 == 0] <- 'miss' 
+
+# classify as a false alarm in case of the catch trial and "yes" response
+data$resp_class[data$stim_type == 0 & data$resp1 == 1] <- 'FA' 
+
+# classify as a correct rejection in case of the catch trial and "no" response
+data$resp_class[data$stim_type == 0 & data$resp1 == 0] <- 'CR' 
+
+# save response class variable as a factor
+data$resp_class <- factor(data$resp_class)
+
+```
+
+<a name="S2"></a>
+&nbsp;
+
+<font size="3">
+**2. Determine the relative positions of stimulus onsets within the cardiac cycle** </font>
+
+```{r}
+
+# load required packages
+require(R.matlab, warn.conflicts = FALSE, quietly=TRUE) 
+
+# specify ECG files prefix
+file_prefix <- 'CCSomato_'
+
+# specify a data frame with the number of ECG events
+ecg_events_list <- data.frame(ID = integer(0),
+                              block = integer(0),
+                              ecg_event_num = numeric(0))
+
+### LOOP PARTICIPANTS (p) 
+
+for (p in unique(data$ID)) {ifelse(p < 10, ID_str <- paste('0', p, sep = ''), ID_str <- p)  
+    
+  ## LOOP BLOCKS (b)
+  
+    for (b in unique(data$block[data$ID==p])) {
+    
+    # specify directories containing ECG data
+    kubios_mat <- paste(data_dir, '/ID', ID_str, '/ecg/kubios/', file_prefix, ID_str, '_exp_0', b,'_hrv','.mat', sep='')
+    ecg_event_file <- paste(data_dir, '/ID', ID_str, '/ecg/eeg_lab/', file_prefix, ID_str, '_events_exp_0', b, '.csv', sep='')
+    
+    # specify ECG sampling frequency (in Hz)
+    ecg_sf <- 1000
+    
+    # load the vectors with R-peaks time series from Kubios matlab files into R
+    R_peaks_tmp <- readMat(kubios_mat)
+    R_peaks <- as.vector(R_peaks_tmp$Res[[4]][[2]][[2]]) # the numbers in the list reflect the position of R peaks data in Kubios matlab files
+    rm(R_peaks_tmp)
+    
+    # import markers of events/responses from ECG file
+    ecg_events <- read.csv(ecg_event_file, sep = '\t')
+    
+    # import a vector with stimulus onset time series (in seconds)
+    stim_onsets <- ecg_events$latency[ecg_events$type=='S  1']/ecg_sf
+    
+    # subset a vector with the sequence of trials (stimulation or catch trial)
+    sequence <- subset(data, ID==p & block==b, stim_type)
+    
+    # subset a vector with the sequence of responses ("yes" or "no")
+    responses <- subset(data, ID==p & block==b, resp1)
+    
+        # LOOP TRIALS (tr) 
+    
+        # specify variables computed in the loop on the trial level (variables are described below within the loop)
+        pos <- c()
+        diff2peak <- c()
+        diff2peak_deg <-c()
+        diff2peak_abs <-c()
+        RR_interval <- c()
+        stim_degree <- c()
+        ecg_i <- 0
+    
+        for (tr in 1:120) { # 120 - number of trials per block
+          
+          # perform further computations while skipping the trials when the ao_error occurred
+          if (data$ao_error[data$ID == p & data$block == b & data$trial == tr] == 1) 
+          {data$diff2peak_deg[data$ID == p & data$block == b & data$trial == tr] <- NA} 
+          else {ecg_i <- ecg_i+1
+            
+              # encode the time of the R peak before the stimulus onset
+              pos[ecg_i] <- max(which(R_peaks < stim_onsets[ecg_i]))
+              
+              # encode the difference between the stimulus onset time and the previous R peak
+              diff2peak[ecg_i] <- stim_onsets[ecg_i] - R_peaks[pos[ecg_i]]
+              
+              # encode tha duration of the RR interval during which the stimulus occurred
+              RR_interval[ecg_i] <- (R_peaks[pos[ecg_i]+1] - R_peaks[pos[ecg_i]])
+              
+              # encode the relative position of stimulus onset within the RR interval, assigning the values from 0 to 360 degrees (with 0 indicating the R peak previous to the stimulus onset). 
+              stim_degree[ecg_i] <- 360 * diff2peak[ecg_i]/(R_peaks[pos[ecg_i]+1] - R_peaks[pos[ecg_i]])
+              
+              # add a variable specifying the relative position of stimulus within the RR interval
+              data$diff2peak_deg[data$ID == p & data$block == b & data$trial == tr] <- stim_degree[ecg_i]
+              
+              # add a variable specifying the absolute difference between the stimulus onset and the previous R peak (in seconds)
+              data$diff2peak_abs[data$ID == p & data$block == b & data$trial == tr] <- diff2peak[ecg_i]
+              
+              # add the "RR interval" variable (in seconds)
+              data$RR_interval[data$ID == p & data$block == b & data$trial == tr] <- RR_interval[ecg_i] 
+              
+            #add the sequence of pre- and post-stimulus RR intervals for each trial
+            
+            # Stimulus - 2  
+    data$RR_int_minus2[data$ID == p & data$block == b & data$trial == tr] <- (R_peaks[pos[ecg_i]-1] - R_peaks[pos[ecg_i]-2])  
+            
+            # Stimulus - 1
+    data$RR_int_minus1[data$ID == p & data$block == b & data$trial == tr] <- (R_peaks[pos[ecg_i]] - R_peaks[pos[ecg_i]-1])    
+            
+            # Stimulus
+    data$RR_int_zero_stimulus[data$ID == p & data$block == b & data$trial == tr] <- (R_peaks[pos[ecg_i]+1] - R_peaks[pos[ecg_i]])              
+            
+            # Stimulus + 1
+    data$RR_int_plus1[data$ID == p & data$block == b & data$trial == tr] <- (R_peaks[pos[ecg_i]+2] - R_peaks[pos[ecg_i]+1])
+            
+            # Stimulus + 2
+    data$RR_int_plus2[data$ID == p & data$block == b & data$trial == tr] <- (R_peaks[pos[ecg_i]+3] - R_peaks[pos[ecg_i]+2])
+            
+            # Stimulus + 3
+    data$RR_int_plus3[data$ID == p & data$block == b & data$trial == tr] <- (R_peaks[pos[ecg_i]+4] - R_peaks[pos[ecg_i]+3])      
+            
+      
+              } # END: perform computations skipping the trials when the ao_error occurred
+      
+        } # END: LOOP TRIAL (tr)
+    
+    # Create data frame with ECG events
+    ecg_events_list[nrow(ecg_events_list)+1,] <- c(p,b,length(stim_onsets))
+    
+    } ## END: LOOP BLOCKS (b)
+  
+} ### END: LOOP PARTICIPANTS (p)
+
+# remove the objects used within the loop
+rm(responses)
+rm(ecg_events)
+rm(sequence)
+
+## Saving and loading the processed data
+#write.table(data, file = "CCSomato_ECG_data(output_from_section_2)", sep = "\t")
+
+```
+
+
+<a name="S3"></a>
+&nbsp;
+
+<font size="3">
+**3. Determine the length of individual cardiac phases (T-wave end detection algorithm)** </font>
+
+```{r}
+
+#data <- read.table("CCSomato_ECG_data(output_from_section_2)", header = TRUE, sep = "\t", fill = TRUE, stringsAsFactors = FALSE)
+
+## T-wave end detection - Trapez area algorithm (Vázquez-Seisdedos et al., 2011) 
+
+# To segment the cardiac cycle into systole and diastole, we computed the trial-specific phases based on cardio-mechanical events related to the ECG trace. The ventricular systolic phase (further referred as "systole") was defined as a time between R peak of the QRS complex and the t-wave end, while diastole as the remaining part of the RR interval. The trapez area algorithm was applied to encode the t-wave end in each trial. First, the t-peak was located as a local maximum within the – physiologically plausible – interval after the R peak containing the t-wave. Subsequently, the algorithm computed a series of trapezes along the descending part of the t-wave signal, defining the point at which the trapezium’s area gets maximal as the t-wave end (implementation of T-wave end alogorithm: Esra Al & Pawel Motyka).
+
+# specify ECG sampling frequency (in Hz)
+fs <- 1000
+
+# LOOP PARTICIPANTS (s)
+for (s in unique(data$ID)){ 
+ ifelse(s < 10, ID_str<-paste('0', s, sep = ''), ID_str<-s)
+  
+  # LOOP BLOCKS (b)
+  
+  for (b in unique(data$block[data$ID == s])) {
+    
+    # subset observations 
+    data_bl <- data[data$ID == ID_str & data$block == b, ]
+    
+    # load ECG data (fllowing the structure described in the previous section)
+    ECG_name <- paste(data_dir, '/ID', ID_str, '/ecg/filtecg/filtECGID', ID_str,'_',b, '.txt', sep='')
+    ECG <- read.table(ECG_name)
+    ECG[,2] <- -ECG[,2]
+    kubios_name <- paste(data_dir, '/ID', ID_str, '/ecg/kubios/', 'CCSomato_', ID_str, '_exp_0', b,'_hrv','.mat', sep='')
+    R_peaks<- readMat(kubios_name)
+    R_peaks<- as.vector(R_peaks$Res[[4]][[2]][[2]]) 
+    ecg_event_file <- paste(data_dir, '/ID', ID_str, '/ecg/eeg_lab/', 'CCSomato_', ID_str, '_events_exp_0', b, '.csv', sep='')
+    ecg_events <- read.csv(ecg_event_file, sep = '\t')
+    
+    # import a vector with stimulus onset time (in seconds)
+    stim_onsets <- ecg_events$latency[ecg_events$type=='S  1']/fs
+
+    # specify variables used in the loops
+    ecg_i <- 0
+    pos <- c()
+    ecgpos1 <- c()
+    ecgpos2 <- c()
+    RRint <- c()
+    
+    # LOOP TRIALS (ind)
+    
+    for (ind in 1:120) { 
+      
+      # perform further computations while skipping the trials when the ao_error occurred
+      if (data$ao_error[data$ID == s & data$block == b & data$trial == ind] == 1) { 
+      
+      ## add "NA" in case of ao_error  
+     
+      # T-wave end
+      data$tend[data$ID == s & data$block == b & data$trial == ind] <- NA
+      
+      # Systole length
+      data$systolength[data$ID == s & data$block == b & data$trial == ind] <- NA
+      
+      # Stimulus at systole - True/False
+      data$systole[data$ID == s & data$block == b & data$trial == ind] <- NA
+        
+      } else { 
+      
+      # for the trials after ao_error occurence take the next datapoint from ECG data vectors    
+      ecg_i <- ecg_i + 1
+      
+      # calculate the position of R peak that occured just before the stimulus onset
+      pos[ecg_i] <- max(which(R_peaks < stim_onsets[ecg_i]))
+      
+      # calculate the position of R peak that occured just before the stimulus onset in data points in the R_peaks vector
+      ecgpos1[ecg_i] <- R_peaks[pos[ecg_i]]*fs 
+      
+      # calculate the duration of RR interval containing the stimulus in data points
+      RRint[ecg_i] <- (R_peaks[pos[ecg_i]+1]-R_peaks[pos[ecg_i]])*fs 
+      
+      # Calculate a time interval where the end of t wave would be included (in data points). Cut off fs*(150/2500) data points so that t wave max calculation would not detect the next R peak.    
+      ecgpos2[ecg_i] <- ecgpos1[ecg_i]+RRint[ecg_i]-150*(fs/2500)
+      
+      # create a vector containing all possible data points in the RR interval for visualization purposes. 120 ms or fs*(300/2500) data points are chosen arbitrarily to include the Rpeaks in the plots.
+      twave1 <- ECG[(ecgpos1[ecg_i]-300*(fs/2500)):ecgpos2[ecg_i]+300*(fs/2500),]
+      
+       # create a vector (twave) where the maximum of t wave could be calculated. After visually observing a block of each participant, it is decided that tmax should occur at least after 350/2500 ms after the R peak. In order to calculate the position of tmax, delete (350/2500)*fs data points from the end of RRint vector and search it until the 1/3 of the remaining vector. 1/3 ratio was given to compensate for the variation of trial to trial RR interval durations.
+      twave <- ECG[(ecgpos1[ecg_i]+350*(fs/2500)):ecgpos2[ecg_i],]
+      tmaxpos <- which.max(twave[1:((RRint[ecg_i]-350*(fs/2500))/3),2]) 
+      
+      # calculate a snip of t wave which starts with the tmax
+      twave2 <- twave[tmaxpos:dim(twave)[1],]
+      
+      # Determine a point called xm located in the segment after the T peak, which has a minimum value in the first derivative. The algoritm searces for xm in a 120 ms time window startng from tmax. In case twave2 does not contain 0.12*fs data points, it searches only until the last point of twave2.
+      dp <- 0.12*fs # 0.12 s in data points
+      if (dp>dim(twave2)[1]) {
+        xm <- which(diff(twave2[,2])==min(diff(twave2[,2]))) 
+      } else {
+        xm <- which(diff(twave2[1:dp,2])==min(diff(twave2[1:dp,2]))) 
+      }
+      xm <- xm[1]
+      ym <- twave2[xm,2]
+      
+      # determine a point xr which is supposed t happen after tend.
+      xr <- 150+xm 
+      
+      # make a vector starting from xm and goes until xr
+      xseq <- xm:xr
+      yseq <- twave2[xm:xr,2]
+      
+      # write a function find the end of twave: first calculation of the trapeziums areas of all the points located between “xm“ and “xr“ and then identification of the point which gives the maximum area and label it as the t-wave end
+      trapez_area <- function(xm, ym, xseq, yseq, xr) {
+        a <- numeric()
+        for (i in seq_along(xseq)){
+          a[i] <- 0.5 * (ym - yseq[i]) * ((2*xr) - xseq[i] - xm)
+        }
+        x_tend <- which.max(a)+xm-1
+        return(x_tend)
+      }
+      tend <- trapez_area(xm, ym, xseq, yseq, xr)
+      
+      ## Optional: Plot visualizations of T-wave end for each trial and export them as jpg files
+      # par(mfrow=c(1,2))
+      # jpeg(file = paste('subject ',s,'_block ',b,'_trial ', ind,".jpg"))
+      # plot(twave1,col='black',xlab='time(ms)', ylab='electrical potential(mV)')
+      # points(twave[tmaxpos,1],twave[tmaxpos,2],col='magenta',pch='+',cex=2)
+      # points(twave2[tend,1],twave2[tend,2],col='green',pch='+',cex=2)
+      # plot(twave2,col='black', xlab='time(s)', ylab='electrical potential(mV)')
+      # title(paste('subject ',s,'_block ',b,'_trial ', ind, sep=''),line=-2, outer=TRUE)
+      # points(twave2[xm,1],twave2[xm,2],col='blue',pch='+',cex=2)
+      # points(twave2[xr,1],twave2[xr,2],col='blue',pch='+',cex=2)
+      # points(twave2[tend,1],twave2[tend,2],col='green',pch='+',cex=2)
+      # points(twave[tmaxpos,1],twave[tmaxpos,2],col='magenta',pch='+',cex=2)
+      # title(paste('subject ',s,'_block ',b,'_trial ', ind, sep=''),line=-2, outer=TRUE)
+      # dev.off()
+      
+      # Add the t-wave end to data frame
+      data$tend[data$ID == s & data$block == b & data$trial == ind] <- twave2[tend,1]
+      
+      # Add systole length to data frame
+      data$systolength[data$ID == s & data$block == b & data$trial == ind] <- twave2[tend,1]-R_peaks[pos[ecg_i]]
+      
+      # Specify whether stimulus onset occurred within the systole interval
+      data$systole[data$ID == s & data$block == b & data$trial == ind] <- stim_onsets[ecg_i]<twave2[tend,1]
+      
+      } # END: "IF-ELSE" CONDITIONAL LOOP
+      
+    } # END: LOOP TRIALS (ind)
+
+  } # END: LOOP BLOCKS (b)
+
+} # END: LOOP PARTICIPANTS (s)
+
+## Save the processed data
+#write.table(data, file = "CCSomato_ECG_data(output_from_section_3)", sep = "\t")
+
+```
+
+
+<a name="S4"></a>
+&nbsp;
+
+<font size="3">
+**4. Show descriptive statistics of behavioral data** </font>
+
+```{r}
+
+#data <- read.table("CCSomato_ECG_data(output_from_section_3)", header = TRUE, sep = "\t", fill = TRUE, stringsAsFactors = FALSE)
+
+## Perform exclusions of individual trials
+
+# remove 15 trials in which ao_error occurred and onset position was not calculated
+length(data$ao_error[data$ao_error == 1])
+data <- data[!(data$ao_error == 1),]
+
+# remove 2 trials with outlying RR intervals lengths (i.e. ~2.1 and ~3.4 seconds) observed due to missed fragments of ECG signal. The third longest interval equaled ~ 1.26 sec.
+length(data$RR_interval[data$RR_interval > 1.27])
+data <- data[!(data$RR_interval > 1.27),]
+
+# remove 191 trials in which participants did not give any response within 2 seconds 
+length(data$resp1_t[data$resp1_t >= 2])
+data <- data[!(data$resp1_t >= 2),]
+
+# remove 2 trials in which participants pressed a wrong button (target buttons were: 2 and 3)
+length(data$resp1_btn[data$resp1_btn < 2 | data$resp1_btn > 3])
+data <- data[!(data$resp1_btn < 2 | data$resp1_btn > 3),]
+
+# show remaining number of the trials after exclusions
+length(data$trial)
+
+# Specify a data frame with the set of behavioral variables
+data_behav <- data.frame(ID = integer(0),
+              age = integer(0),
+              hit = numeric(0),
+              miss = numeric(0),
+              FA = numeric(0), 
+              CR = numeric(0),  
+              hit_rate = numeric (0),
+              FA_rate = numeric(0)) 
+
+# LOOP PARTICIPANTS (p) 
+
+for (p in unique(data$ID)) {
+  
+     #age
+     age <- unique(data$age[data$ID == p])
+     
+     # count hits
+     hit <- length(data$resp_class[data$resp_class =="hit" & data$ID == p])
+     
+     # count misses
+     miss <- length(data$resp_class[data$resp_class =="miss" & data$ID == p])
+     
+     # count false alarms
+     FA <- length(data$resp_class[data$resp_class =="FA" & data$ID == p ])
+     
+     # count correct rejections
+     CR <- length(data$resp_class[data$resp_class =="CR" & data$ID == p ])
+    
+     
+     # calculate hit rate (varying from 0 to 1)
+     hit_rate <- (length(data$resp_class[data$resp_class =="hit" & data$ID == p]))/(length(data$trial[data$ID == p & data$stim_type == 1]))
+     
+     # calculate false alarms rate (varying from 0 to 1)
+      FA_rate <- (length(data$resp_class[data$resp_class =="FA" & data$ID == p]))/(length(data$trial[data$ID == p & data$stim_type == 0]))
+      
+     # create a data frame with the abovementioned variables
+      data_behav[nrow(data_behav)+1,] <- c(p, age, hit, miss, FA, CR, hit_rate, FA_rate)
+      
+    } # END: LOOP PARTICIPANTS (p)
+
+# show basic statistics for hit rate    
+mean(data_behav$hit_rate)
+median(data_behav$hit_rate)
+sd(data_behav$hit_rate)
+range(data_behav$hit_rate)
+
+# show basic statistics for false alarms rate
+mean(data_behav$FA_rate)
+median(data_behav$FA_rate)
+sd(data_behav$FA_rate)
+range(data_behav$FA_rate)
+
+# show basic statistics for age
+mean(data_behav$age)
+range(data_behav$age)
+sd(data_behav$age)
+
+# show a total number of valid trials
+length(data$trial)
+length(data$trial[data$resp_class == "hit"])
+length(data$trial[data$resp_class == "miss"])
+length(data$trial[data$resp_class == "FA"])
+length(data$trial[data$resp_class == "CR"])
+
+#Stimulus intensity (summary)
+stim_int <- data.frame(ID = integer(0),
+                              block = integer(0),
+                              intensity = numeric(0))
+
+### LOOP PARTICIPANTS (p) 
+for (p in unique(data$ID)) {
+    
+  ## LOOP BLOCKS (b)
+    for (b in unique(data$block[data$ID==p])) {
+   ID <- p
+   block <- b
+   intensity <- mean(data$intensity[data$ID == p & data$block == b & data$stim_type ==1])
+    stim_int[nrow(stim_int)+1,] <- c(p,b,intensity)
+     
+    } ## END: LOOP BLOCKS (b)
+} ### END: LOOP PARTICIPANTS (p)
+
+M_int <- mean(stim_int$intensity)
+SD_int <- sd(stim_int$intensity)
+range_int <- range(stim_int$intensity)
+
+## Save the processed data
+#write.table(data, file = "CCSomato_ECG_data(output_from_section_4)", sep = "\t")
+
+```
+
+<a name="S5"></a>
+&nbsp;
+
+<font size="3">
+**5. Test unifromity of stimulus onsets distribution within the cardiac cycle for each participant** </font>
+
+
+```{r, fig.width=4, fig.height=4}
+
+#data <- read.table("CCSomato_ECG_data(output_from_section_4)", header = TRUE, sep = "\t", fill = TRUE, stringsAsFactors = FALSE)
+
+# load required packages
+require(circular, warn.conflicts = FALSE, quietly=TRUE) 
+
+## General information about the Rayleigh Test (Circular Statistics)
+#"Rayleigh Test of Uniformity" assess the significance of the mean resultant length (—R) which is "a measure of the concentration of data points around the circle. If —R is greater than a threshold value, the data are interpreted as being too concentrated to be consistent with uniformity" (Pawsey et al., 2013, s. 81). The alternative hypothesis is a unimodal distribution with unknown mean direction. For more details on using circular statistics in R please see: https://cran.r-project.org/web/packages/circular/circular.pdf
+
+# specify a data frame with the uniformity test results for each participant
+Onset_distribution_ID <- data.frame(ID = integer(0),
+                              test_statistics = numeric(0),
+                              p_value = numeric(0))
+
+for (p in unique(data$ID)) { # LOOP PARTICIPANTS (p)
+  
+  # save the vector with calculated onset positions in degrees as a circular object
+  temp_onset <- circular(data$diff2peak_deg[data$ID==p], type="angles", units="degree", rotation="clock", zero=pi/2) 
+
+   ## Optional: plot the distribution of stimulus onsets within the RR intervals for each participant - with 0 indicating the R peak before stimulus onset
+  #plot(temp_onset, stack=TRUE, col = "gray25", cex = 0.77, main = paste("Onset distibution \n participant nr", p))
+  #rose.diag(temp_onset, bins = 16, col = "cadetblue4", prop = 2.5, add = T, axes = F)
+  #circ.dens = density(temp_onset, bw=40)
+  #lines(circ.dens, col="lightcyan3", lwd = 3, xpd=TRUE)
+  
+  # test uniformity of onset distribution for a particpant and save the results
+  onset_distribution_individual <- rayleigh.test(temp_onset) 
+
+  # show test statistics and p-value for a participant
+  participant <- paste("ID", p)
+  print(participant)
+  print(onset_distribution_individual)  
+  
+  # add test statistics and p-value to the data frame with uniformity testing results
+  p_value <- onset_distribution_individual$p.value
+  test_statistics <- onset_distribution_individual$statistic
+  Onset_distribution_ID[nrow(Onset_distribution_ID)+1,] <- c(p, test_statistics, p_value)
+  
+}
+
+# show participants with a non-uniform distribution of stimulus onset
+Onset_distribution_ID$ID[Onset_distribution_ID$p_value < 0.05]
+
+# remove participant nr 12 from circular analysis
+data_Circ <- data[data$ID != 12,] 
+
+```
+<a name="S5"></a>
+&nbsp;
+
+<font size="3">
+**6. Test unifromity of hits and misses distributions within the cardiac cycle (Figure 2AB)** </font>
+
+```{r}
+
+# load required packages
+require(scales, warn.conflicts = FALSE, quietly=TRUE)
+
+## HITS
+
+
+# specify a variable with the relative positions of hits within the RR intervals
+mean_degree_hit <- vector()
+
+# extract the list of participants
+ID_list <- unique(data_Circ$ID)
+
+for (p in ID_list) { # LOOP PARTICIPANTS (p)
+  
+  # save the vector with hits positions in degrees as a circular object
+  temp_hit <- circular(data_Circ$diff2peak_deg[data_Circ$ID==p & data_Circ$resp_class == "hit"], type="angles", units="degree", rotation="clock", zero=0)
+  
+  # calculate the mean phase when hits occurred for each participant
+  mean_degree_hit[p] <- mean(temp_hit)
+
+} # END: LOOP PARTICIPANTS (p)
+
+# save the vector with mean hits for each particiapant as a circular object
+Hits_secondlevel <- circular(mean_degree_hit[ID_list], type="angles", units="degree", rotation="clock", zero=pi/2)
+
+# plot the distribution of mean hits within the RR intervals - with 0 indicating the R peak previous to the stimulus onset
+plot(Hits_secondlevel, stack= TRUE, bins = 720, col = alpha("gray10", 0.8), cex = 0.88, lwd = 2, main = "Hits")
+
+# optionally add 'type = "n"' argument to eliminate points from the plot
+
+# add lines representing mean hits for each participant
+arrows.circular(Hits_secondlevel, col = rgb(0.23,0.48,0.50, 0.15), lwd = 3, length = 0.001)
+
+# add an arrow representing grand mean for hits - with its length signifying resultant length of the grand mean
+arrows.circular(mean(Hits_secondlevel), y=rho.circular(Hits_secondlevel), lwd = 3.3, col = rgb(0.13,0.28,0.30, 0.85), length = 0.08)
+
+# add line signifying distribution of hits (bandwidth = 20)
+circ.dens = density(Hits_secondlevel, bw=20)
+lines(circ.dens, col= rgb(0.23,0.48,0.50), lwd = 1.5, type = "d", xpd=TRUE)
+
+# test uniformity of hits distribution within the RR intervals
+rayleigh.test(Hits_secondlevel)
+
+# show an angle of grand mean for hits
+mean(Hits_secondlevel)
+
+
+## MISSES
+
+
+# specify a variable with the relative positions of misses within the RR intervals
+mean_degree_miss <- vector()
+
+ID_list <- unique(data_Circ$ID)
+
+for (p in ID_list) { # LOOP PARTICIPANTS (p)
+
+  # save the vector with the mean misses for each particiapant as a circular object
+  temp_miss <- circular(data_Circ$diff2peak_deg[data_Circ$ID==p & data_Circ$resp_class == "miss"], type="angles", units="degree",  rotation="clock", zero=0)
+  
+  # calculate the mean phase when misses occurred for each participant
+  mean_degree_miss[p] <- mean(temp_miss)
+
+} # END: LOOP PARTICIPANTS (p)
+
+# save the vector with mean misses for each particiapant as a circular object
+Miss_secondlevel <- circular(mean_degree_miss[ID_list], type ="angles", units ="degree", rotation ="clock", zero=pi/2)
+
+# plot the distribution of mean misses within the RR intervals - with 0 indicating the R peak previous to the stimulus onset
+plot(Miss_secondlevel, stack= TRUE, bins = 720, col = alpha("gray10", 0.8), cex = 0.88, lwd = 2, main = "Misses")
+
+# optionally add 'type = "n"' argument to eliminate points from the plot
+
+# add lines representing mean misses for each participant
+arrows.circular(Miss_secondlevel, col = rgb(0.23,0.48,0.50, 0.15), lwd = 3, length = 0.001)
+
+# add an arrow representing grand mean for misses - with its length signifying resultant length of the grand mean
+arrows.circular(mean(Miss_secondlevel), y=rho.circular(Miss_secondlevel), lwd = 3.3, col = rgb(0.13,0.28,0.30, 0.85), length = 0.08)
+
+# add line signifying distribution of misses (bandwidth = 20)
+circ.dens = density(Miss_secondlevel, bw=20)
+lines(circ.dens, col= rgb(0.23,0.48,0.50), lwd = 1.5, type = "d", xpd=TRUE)
+
+# test uniformity of misses distribution within RR intervals
+rayleigh.test(Miss_secondlevel)
+
+# show an angle of grand mean for misses
+mean(Miss_secondlevel)
+
+```
+
+<a name="S7"></a>
+&nbsp;
+
+<font size="3">
+**7. Filter out outlying systole intervals** </font>
+
+```{r}
+
+### Exclusion of outlying systole lengths defined as more than 4 standard deviations above or below the participant-specific mean
+
+# Specify ID list
+ID_list <- unique(data$ID)
+# Specify data frame with the range of systole lengths (+/-4SD)
+meansys <- matrix(data=NA,nrow=34,ncol=2)
+
+## Identify minimal (-4SD) and maximal (+4D) acceptable systole length for each subject
+
+# LOOP PARTICIPANTS (s)
+
+for (s in ID_list){
+  
+  # threshold of 'minimal' systole length (-4SD)
+  min_th <- mean(data$systolength[data$ID==s],na.rm=T) -4*sd(data$systolength[data$ID==s],na.rm=T)  
+  # save minimal threshold for participant
+  meansys[s,1] <- min_th
+  
+  # threshold of 'maximal' systole length (+4SD) (+4SD)
+  max_th <- mean(data$systolength[data$ID==s],na.rm=T) +4*sd(data$systolength[data$ID==s],na.rm=T)  
+  # save maximal threshold for participant
+  meansys[s,2] <- max_th
+  
+} # END: LOOP PARTICIPANTS (s)
+
+## Indetify trials with outyling systole lengths 
+
+# LOOP PARTICIPANTS (s)
+
+# Vectors with the sum of outyling trials
+below_4SD=c()
+above_4SD=c()
+
+for (s in ID_list){
+  
+  # Vectors with the outlying trials for each subject
+  below_4SD_sub <- c()  
+  above_4SD_sub <- c()
+  
+  # Find outyling trials (-4SD) for each subject
+  if (sum(data$ID[data$systolength < meansys[s,1] & data$ID==s], na.rm=T)>0) {
+    below_4SD_sub <- cbind(data$ID[data$systolength < meansys[s,1] & data$ID==s ], data$block[data$systolength < meansys[s,1] & data$ID==s], data$trial[data$systolength < meansys[s,1] & data$ID==s])
+  # Save these trials into a data frame with all outlying trials
+    below_4SD <- rbind(below_4SD, below_4SD_sub)
+  }
+  
+  # Find outyling trials (+4SD) for each subject
+  if (sum(data$ID[data$systolength>meansys[s,2] & data$ID==s ],na.rm=T)) {
+    above_4SD_sub <- cbind(data$ID[data$systolength>meansys[s,2] & data$ID==s ], data$block[data$systolength>meansys[s,2] & data$ID==s],data$trial[data$systolength>meansys[s,2] & data$ID==s])
+  # Save these trials into data frame with all outlying trials
+    above_4SD <- rbind(above_4SD, above_4SD_sub)
+  }
+}  # END: LOOP PARTICIPANTS (s)
+
+# Create a list of all trials with outlying systole lengths 
+outlying_trials <- rbind(below_4SD, above_4SD)
+outlying_trials <- na.omit(outlying_trials)
+length(outlying_trials[,1])
+
+# Exclude 27 trials with outlying lengths of systole
+data_cor <- data
+for (r in 1:nrow(outlying_trials)) {
+  data_cor <- data_cor[!(data_cor$ID==outlying_trials[r,1] & data_cor$block==outlying_trials[r,2] & data_cor$trial==outlying_trials[r,3]),]
+}
+
+# Save the filtered data for binary analysis
+data <- data_cor
+
+## Saving and loading the processed data
+#write.table(data, file = "CCSomato_ECG_data(output_from_section_7)", sep = "\t")
+
+
+```
+
+
+<a name="S8"></a>
+&nbsp;
+<font size="3">
+
+**8. Test differences in mean hit rates between systole and diastole (Figure 3)** </font>
+
+```{r}
+
+#data <- read.table("CCSomato_ECG_data(output_from_section_7)", header = TRUE, sep = "\t", fill = TRUE, stringsAsFactors = FALSE)
+
+# load required packages
+require(ggplot2, warn.conflicts = FALSE, quietly=TRUE)
+require(effsize, warn.conflicts = FALSE, quietly=TRUE)
+require(scales, warn.conflicts = FALSE, quietly=TRUE)
+
+## Create a data frame with hit rates for each participant 
+
+data_ID <- data.frame(ID = integer(0),
+                 hit_rate = numeric (0),
+                 hit_rate_s = numeric(0), # hit rate at systole
+                 hit_rate_d = numeric(0)) # hit rate at diastole
+
+
+for ( p in unique(data$ID)) { # LOOP PARTICIPANTS (p)
+    
+    # calculate hit rate
+    hit_rate <- (length(data$resp_class[data$resp_class =="hit" & data$ID == p]))/(length(data$trial[data$ID == p & data$stim_type == 1]))
+    
+   
+    # calculate hit rate at systole
+    hit_rate_s <- (length(data$resp_class[data$resp_class =="hit" & data$ID == p & data$systole == T]))/(length(data$trial[data$ID == p & data$stim_type == 1 & data$systole == T]))
+    
+    # calculate hit rate at diastole
+    hit_rate_d <- (length(data$resp_class[data$resp_class =="hit" & data$ID == p & data$systole == F]))/(length(data$trial[data$ID == p & data$stim_type == 1 & data$systole == F]))
+
+    # add calculated varialbes to the data frame
+    data_ID[nrow(data_ID)+1,] <- c(p, hit_rate, hit_rate_s,hit_rate_d)
+    
+} # END: LOOP PARTICIPANTS (p)
+
+data_ID$hit_rate <- data_ID$hit_rate * 100
+data_ID$hit_rate_s <- data_ID$hit_rate_s * 100
+data_ID$hit_rate_d <- data_ID$hit_rate_d * 100
+
+# test normality of hit rate distribution at systole and diastole
+shapiro.test(data_ID$hit_rate_s)
+shapiro.test(data_ID$hit_rate_d)
+
+# employ paired t-test to determine whether hit rate differs between the systole and diastole
+t.test(data_ID$hit_rate_s, data_ID$hit_rate_d, mu = 0, alt = "two.sided", conf = 0.95, paired = T)
+
+# Calculate Cohen's d
+cohen.d(data_ID$hit_rate_d, data_ID$hit_rate_s, paired = T)
+
+# show means for systole and diastole
+mean(data_ID$hit_rate_s)
+sd(data_ID$hit_rate_s)
+
+mean(data_ID$hit_rate_d)
+sd(data_ID$hit_rate_d)
+
+
+# show number of participants with higher hit rate at diastole, systole
+nrow(data_ID[data_ID$hit_rate_d > data_ID$hit_rate_s,])
+nrow(data_ID[data_ID$hit_rate_d < data_ID$hit_rate_s,])
+
+
+## Plot hit rate at systole and diastole in reference to an identity line
+
+# save data as vectors
+hit_rate_s <- data_ID$hit_rate_s
+hit_rate_d <- data_ID$hit_rate_d
+
+# generate square plotting region
+par(pty="s")
+
+# specify plotting space
+plot(c(0,109),c(0,109),type="n",xlab ="", ylab="", cex.lab = 0.8, cex.axis = 0.8, frame.plot = F)
+
+title(ylab="Hit rate at systole (%)", line = 2.5, cex.lab= 0.8)
+title(xlab="Hit rate at diastole (%)", line = 2.5, cex.lab= 0.8)
+
+# create an identity line using a customized linear model
+x<-0:100
+y<-0:100
+new <- data.frame(x = seq(0, 100, 0.5))
+lines(new$x, predict(lm(y~x), new),col= alpha("black", alpha = 0.8),lty= 2, lwd = 1.3)
+
+# plot the individual data
+points(hit_rate_d,hit_rate_s, pch = 1, col = rgb(0.23,0.48,0.50, 0.8), cex = 1)
+
+# prepare a matrix with hit rate distribution (difference between hit rate at systole and diastole)
+diff <- as.matrix(data.frame(x=density(hit_rate_d-hit_rate_s)$x,y=density(hit_rate_d-hit_rate_s)$y))
+
+# rescale y axis to match size of the plot
+f <- scales::rescale(diff[,2], to = c(0, 20))
+diff <- as.matrix(data.frame(x=density(hit_rate_d-hit_rate_s)$x,y=f))
+
+# prepare rotation parameters
+rotation_matrix <- matrix(c(cospi(1/4),sinpi(1/4),-sinpi(1/4),cospi(1/4)),ncol=2)
+
+# rotate the matrix with hit rate distribution 
+diff_rotated <- diff %*% rotation_matrix
+
+# plot hits rate distribution
+lines((diff_rotated)+90, col = rgb(0.23,0.48,0.50), lwd = 1.7)
+
+# create the x axis
+lines(c(74,103.4),c(103.4,74), col = "black", cex = 1)
+
+# define the coordinates representing the values plotted the x axis
+points_coordinates <- matrix(c(1,0,-1,0),nrow=2,byrow=T)
+
+# rotate the coordinates
+points_coordinates_rotated <- points_coordinates %*% rotation_matrix
+
+# add units to x axis
+text(points_coordinates_rotated[1,1]+92,points_coordinates_rotated[1,2]+77,"+10%",srt=315,cex=.7)
+text(points_coordinates_rotated[1,1]+103,points_coordinates_rotated[1,2]+74.7,"|",srt=315,cex=.8)
+text(points_coordinates_rotated[2,1]+77,points_coordinates_rotated[2,2]+92,"-10%",srt=315,cex=.7)
+text(points_coordinates_rotated[2,1]+74.7,points_coordinates_rotated[2,2]+103,"|",srt=315,cex=.8)
+
+# add endpoints to x axis 
+text(points_coordinates_rotated[1,1]+94.7,points_coordinates_rotated[1,1]+80,"|",srt=315, cex= 0.35, col = "black")
+text(points_coordinates_rotated[1,1]+80,points_coordinates_rotated[1,1]+94.7,"|",srt=315, cex= 0.35, col = "black")
+
+# add legend
+legend("topleft", "Hit rate distribution" , lty=1, col=rgb(0.23,0.48,0.50), lwd = 1.5, bty='n', cex=.79)
+
+```
+
+<a name="S9"></a>
+&nbsp;
+
+<font size="3">
+**9. Test Pre- and post-stimulus heart rate for hits and misses (Figure 4A)** </font>
+
+```{r, message = FALSE}
+
+#data <- read.table("CCSomato_ECG_data(output_from_section_7)", header = TRUE, sep = "\t", fill = TRUE, stringsAsFactors = FALSE)
+
+# load required packages
+require(ggplot2, warn.conflicts = FALSE, quietly=TRUE)
+require(scales, warn.conflicts = FALSE, quietly=TRUE)
+require(lme4, warn.conflicts = FALSE, quietly=TRUE)
+require(tidyr, warn.conflicts = FALSE, quietly=TRUE)
+require(afex, warn.conflicts = FALSE, quietly=TRUE)
+require(plyr, warn.conflicts = FALSE, quietly=TRUE)
+require(emmeans, warn.conflicts = FALSE, quietly=TRUE)
+
+# Specify a data frame with pre- and post-stimulus RR Intervals seperately for hits and misses 
+data_ID <- data.frame(ID = integer(0),
+                 RR_int_minus2_hit  = numeric(0), # S-2 hits
+                 RR_int_minus1_hit  = numeric(0), # S-1 hits
+                 RR_int_stimulus_hit = numeric(0), # Stimulus hits
+                 RR_int_plus1_hit = numeric(0), # S+1 hits
+                 RR_int_plus2_hit = numeric(0), # S+2 hits
+                 RR_int_plus3_hit = numeric(0), #S+3 hits
+                 RR_int_minus2_miss  = numeric(0), #S-2 misses
+                 RR_int_minus1_miss  = numeric(0), #S-1 misses
+                 RR_int_stimulus_miss = numeric(0), #Stimulus misses
+                 RR_int_plus1_miss = numeric(0), #S+1 misses
+                 RR_int_plus2_miss = numeric(0), #S+2 misses
+                 RR_int_plus3_miss = numeric(0), #S+3 misss
+                 RR_int_mean = numeric(0)) # Mean RR Interval
+
+for ( i in unique(data$ID )) { # LOOP PARTICIPANTS (i)
+  
+# Calculate RR Intervals specified in the data frame (HITS)
+    RR_int_minus2_hit <- mean(data$RR_int_minus2[data$ID == i & data$resp_class == "hit"])
+    RR_int_minus1_hit <- mean(data$RR_int_minus1[data$ID == i & data$resp_class == "hit"])
+    RR_int_stimulus_hit <- mean(data$RR_int_zero_stimulus[data$ID == i & data$resp_class == "hit"])
+    RR_int_plus1_hit <- mean(data$RR_int_plus1[data$ID == i & data$resp_class == "hit"])
+    RR_int_plus2_hit <- mean(data$RR_int_plus2[data$ID == i & data$resp_class == "hit"])
+    RR_int_plus3_hit <- mean(data$RR_int_plus3[data$ID == i & data$resp_class == "hit"])
+    
+# Calculate RR Intervals specified in the data frame (MISSES)
+    RR_int_minus2_miss <- mean(data$RR_int_minus2[data$ID == i & data$resp_class == "miss"])
+    RR_int_minus1_miss <- mean(data$RR_int_minus1[data$ID == i & data$resp_class == "miss"])
+    RR_int_stimulus_miss <- mean(data$RR_int_zero_stimulus[data$ID == i & data$resp_class == "miss"])
+    RR_int_plus1_miss <- mean(data$RR_int_plus1[data$ID == i & data$resp_class == "miss"])
+    RR_int_plus2_miss <- mean(data$RR_int_plus2[data$ID == i & data$resp_class == "miss"])
+    RR_int_plus3_miss <- mean(data$RR_int_plus3[data$ID == i & data$resp_class == "miss"])
+
+# Calculate mean RR Interval
+    RR_int_mean <- mean(RR_int_minus2_hit, RR_int_minus1_hit, RR_int_stimulus_hit, RR_int_plus1_hit,   RR_int_plus2_hit, RR_int_plus3_hit, RR_int_minus2_miss, RR_int_minus1_miss,  RR_int_stimulus_miss, RR_int_plus1_miss, RR_int_plus2_miss, RR_int_plus3_miss)
+
+# Create the data frame
+    data_ID[nrow(data_ID)+1,] <- c(i, RR_int_minus2_hit, RR_int_minus1_hit, RR_int_stimulus_hit, RR_int_plus1_hit, RR_int_plus2_hit, RR_int_plus3_hit,RR_int_minus2_miss, RR_int_minus1_miss, RR_int_stimulus_miss, RR_int_plus1_miss, RR_int_plus2_miss, RR_int_plus3_miss, RR_int_mean)
+
+} # END: LOOP PARTICIPANTS (i)
+
+# Show mean and SD for mean RR Interval
+mean(data_ID$RR_int_mean)
+sd(data_ID$RR_int_mean)
+
+# Remove mean RR Interval from the data frame
+data_ID <- data_ID[,c(1:13)]
+
+
+## Prepare the data frame for two-way repeated measures ANOVA
+
+# reshape the data frame
+dat <- gather(data_ID, key = "time", value = "value", -ID)
+
+# Create separate factor: awareness (hit/miss)
+for ( i in 1:396) { # LOOP ROWS (i)
+ifelse(dat$time[i] == "RR_int_minus2_hit" | dat$time[i] == "RR_int_minus1_hit" | dat$time[i] == "RR_int_stimulus_hit" | dat$time[i] == "RR_int_plus1_hit" | dat$time[i] == "RR_int_plus2_hit" | dat$time[i] == "RR_int_plus3_hit", dat$awareness[i] <- "hit", dat$awareness[i] <- "miss")
+} # END: LOOP ROWS (i)
+
+# Create separate factor: time (from S-2 to S+3)
+dat$time[dat$time == 'RR_int_minus2_hit' | dat$time == 'RR_int_minus2_miss'] <- "T0"
+dat$time[dat$time == 'RR_int_minus1_hit' | dat$time == 'RR_int_minus1_miss'] <- "T1"
+dat$time[dat$time == 'RR_int_stimulus_hit' | dat$time == 'RR_int_stimulus_miss'] <- "T2"
+dat$time[dat$time == 'RR_int_plus1_hit' | dat$time == 'RR_int_plus1_miss'] <- "T3"
+dat$time[dat$time == 'RR_int_plus2_hit' | dat$time == 'RR_int_plus2_miss'] <- "T4"
+dat$time[dat$time == 'RR_int_plus3_hit' | dat$time == 'RR_int_plus3_miss'] <- "T5"
+
+# Save time, awareness, and ID as factors
+dat$time <- factor(dat$time)
+dat$awareness <- factor(dat$awareness)
+dat$ID <- factor(dat$ID)
+
+
+## Perform two-way repeated measures ANOVA
+
+# Run to see ucorrected degrees of freedom
+fit_all <- aov_ez("ID","value", dat, within=c("time", "awareness"), return = "nice")
+fit_all 
+
+# Perform test with corrected degrees of freedom
+fit_all <- aov_ez("ID","value", dat, within=c("time", "awareness"))
+fit_all # to see corrected degrees of freedom 
+summary(fit_all) # see epsilon values
+
+# Calculate confidence intervals
+ref <- emmeans::emmeans(fit_all, specs = c("awareness", "time"))
+ref 
+
+# Post-hoc Bonferroni-corrected paired t tests. 
+emmeans::contrast(ref,method="pairwise",adjust="bonferroni")
+
+## Create three functions used to calculate within-subjects variation. These fragments of code are credited to Winston Chang and were used and copied here under the CC0 license (http://www.cookbook-r.com/Graphs/Plotting_means_and_error_bars_(ggplot2)/#understanding-within-subjects-error-bars)
+
+# Function 1: normDataWithin
+
+normDataWithin <- function(data=NULL, idvar, measurevar, betweenvars=NULL, na.rm=FALSE, .drop=TRUE) {
+    library(plyr)
+
+    # Measure var on left, idvar + between vars on right of formula.
+    data.subjMean <- ddply(data, c(idvar, betweenvars), .drop=.drop,
+     .fun = function(xx, col, na.rm) {
+        c(subjMean = mean(xx[,col], na.rm=na.rm))
+      },
+      measurevar,
+      na.rm
+    )
+
+    # Put the subject means with original data
+    data <- merge(data, data.subjMean)
+
+    # Get the normalized data in a new column
+    measureNormedVar <- paste(measurevar, "_norm", sep="")
+    data[,measureNormedVar] <- data[,measurevar] - data[,"subjMean"] +
+                               mean(data[,measurevar], na.rm=na.rm)
+
+    # Remove this subject mean column
+    data$subjMean <- NULL
+
+    return(data)
+}
+
+# Function 2: summarySEwithin
+
+summarySEwithin <- function(data=NULL, measurevar, betweenvars=NULL, withinvars=NULL, idvar=NULL, na.rm=FALSE, conf.interval=.95, .drop=TRUE) {
+
+  # Ensure that the betweenvars and withinvars are factors
+  factorvars <- vapply(data[, c(betweenvars, withinvars), drop=FALSE],
+    FUN=is.factor, FUN.VALUE=logical(1))
+
+  if (!all(factorvars)) {
+    nonfactorvars <- names(factorvars)[!factorvars]
+    message("Automatically converting the following non-factors to factors: ",
+            paste(nonfactorvars, collapse = ", "))
+    data[nonfactorvars] <- lapply(data[nonfactorvars], factor)
+  }
+
+  # Get the means from the un-normed data
+  datac <- summarySE(data, measurevar, groupvars=c(betweenvars, withinvars),
+                     na.rm=na.rm, conf.interval=conf.interval, .drop=.drop)
+
+  # Drop all the unused columns (these will be calculated with normed data)
+  datac$sd <- NULL
+  datac$se <- NULL
+  datac$ci <- NULL
+
+  # Norm each subject's data
+  ndata <- normDataWithin(data, idvar, measurevar, betweenvars, na.rm, .drop=.drop)
+
+  # This is the name of the new column
+  measurevar_n <- paste(measurevar, "_norm", sep="")
+
+  # Collapse the normed data - now we can treat between and within vars the same
+  ndatac <- summarySE(ndata, measurevar_n, groupvars=c(betweenvars, withinvars),
+                      na.rm=na.rm, conf.interval=conf.interval, .drop=.drop)
+
+  # Apply correction from Morey (2008) to the standard error and confidence interval
+  #  Get the product of the number of conditions of within-S variables
+  nWithinGroups    <- prod(vapply(ndatac[,withinvars, drop=FALSE], FUN=nlevels,
+                           FUN.VALUE=numeric(1)))
+  correctionFactor <- sqrt( nWithinGroups / (nWithinGroups-1) )
+
+  # Apply the correction factor
+  ndatac$sd <- ndatac$sd * correctionFactor
+  ndatac$se <- ndatac$se * correctionFactor
+  ndatac$ci <- ndatac$ci * correctionFactor
+
+  # Combine the un-normed means with the normed results
+  merge(datac, ndatac)
+}
+
+# Function 3: summarySE
+
+summarySE <- function(data=NULL, measurevar, groupvars=NULL, na.rm=FALSE,
+                      conf.interval=.95, .drop=TRUE) {
+    library(plyr)
+
+    # New version of length which can handle NA's: if na.rm==T, don't count them
+    length2 <- function (x, na.rm=FALSE) {
+        if (na.rm) sum(!is.na(x))
+        else       length(x)
+    }
+
+    # This does the summary. For each group's data frame, return a vector with
+    # N, mean, and sd
+    datac <- ddply(data, groupvars, .drop=.drop,
+      .fun = function(xx, col) {
+        c(N    = length2(xx[[col]], na.rm=na.rm),
+          mean = mean   (xx[[col]], na.rm=na.rm),
+          sd   = sd     (xx[[col]], na.rm=na.rm)
+        )
+      },
+      measurevar
+    )
+
+    # Rename the "mean" column    
+    datac <- rename(datac, c("mean" = measurevar))
+
+    datac$se <- datac$sd / sqrt(datac$N)  # Calculate standard error of the mean
+
+    # Confidence interval multiplier for standard error
+    # Calculate t-statistic for confidence interval: 
+    # e.g., if conf.interval is .95, use .975 (above/below), and use df=N-1
+    ciMult <- qt(conf.interval/2 + .5, datac$N-1)
+    datac$ci <- datac$se * ciMult
+
+    return(datac)
+}
+
+## Calculate within-subjects variation
+d <- summarySEwithin(data=dat, measurevar = 'value', betweenvars=NULL, withinvars=c('time','awareness'), idvar='ID', na.rm=FALSE, conf.interval=.95, .drop=TRUE)
+
+# Change into milliseconds 
+d$value <- d$value * 1000
+d$ci <- d$ci * 1000
+
+# Prepare descriptions
+labs <- c("S-2", "S-1", "Stimulus", "S+1", "S+2", "S+3")
+
+# Save awareness as factor
+d$awareness <- factor(d$awareness)
+
+## Plot associations between heart rate and perceptual performance over the course of a trial
+pd <- position_dodge(0)
+plot <- ggplot(d, aes(x=time, y=value,group=awareness,colour=awareness)) + 
+  geom_ribbon(aes(ymin=value-ci, ymax=value+ci, fill = factor(awareness)), position=pd, show.legend = F, alpha = 0.3, colour = NA) +
+  scale_fill_manual(values=c("firebrick3", "blue3")) +
+   geom_line(position=pd, size = 0.7)+
+   geom_point(position=pd)+theme_classic()+
+  labs(x = " ", y = "Interbeat interval (ms)") +
+  scale_x_discrete(labels=labs) +
+scale_y_continuous(limits=c(800,880)) +
+  scale_color_manual(values=c("firebrick3", "blue3")) +
+  coord_fixed(ratio = 0.05) +
+  theme(legend.position= c(0.85,0.9)) +
+  theme(legend.text = element_text(colour="black", size=14)) +
+  theme(legend.title=element_blank()) +
+  theme(legend.key.width = unit(1.05, "cm")) +
+  theme(axis.title.y = element_text(size = 14.7, margin = margin(t = 0, r = 15, b = 0, l = 0))) +
+  theme(axis.text=element_text(size=13.8, colour = "black"))
+print(plot)
+
+```
+
+<a name="S10"></a>
+&nbsp;
+
+<font size="3">
+**10. Test differences in the extent of cardiac deceleration between hits and misses (Figure 4B)** </font>
+
+```{r}
+
+# load required packages
+require(ggplot2, warn.conflicts = FALSE, quietly=TRUE)
+require(effsize, warn.conflicts = FALSE, quietly=TRUE)
+require(reshape2, warn.conflicts = FALSE, quietly=TRUE)
+source("https://gist.githubusercontent.com/benmarwick/2a1bb0133ff568cbe28d/raw/fb53bd97121f7f9ce947837ef1a4c65a73bffb3f/geom_flat_violin.R") # https://github.com/benmarwick
+
+# Calculate difference between the RR interval when stimulus was delivered and the prior interval ("slope of heart rate change")
+data$deceleration <- data$RR_int_zero_stimulus - data$RR_int_minus1
+
+## Standardize cardiac deceleration into z-scores in each trial 
+
+# Derive participant-specific mean and SD of cardiac deceleration
+for ( i in unique(data$ID)) { # LOOP PARTICIPANTS (i)
+    dec_mean <- mean(data$deceleration[data$ID == i]) # mean
+    dec_sd <- sd(data$deceleration[data$ID == i]) # SD
+
+    for (b in unique(data$block[data$ID == i])) { # LOOP BLOCKS (b)
+        for (t in unique(data$trial[data$ID == i & data$block == b])) { # LOOP TRIALS (t)
+    
+    # ascribe z-scored value to each trial 
+    data$dec[data$ID == i & data$block == b & data$trial == t] <- (data$dec[data$ID == i & data$block == b & data$trial == t] - dec_mean) / dec_sd
+      } # END: LOOP TRIALS
+    } # END: LOOP BLOCKS
+} # END: LOOP PARTICIPANTS
+
+## Specify a data frame with z-scored cardiac deceleration for hits and misse
+data_ID <- data.frame(ID = integer(0),
+                 dec_hit  = numeric(0),
+                 dec_miss = numeric(0))
+
+for ( i in unique(data$ID )) { # LOOP PARTICIPANTS (i)
+    dec_miss <- mean(data$dec[data$ID == i & data$resp_class == "miss"]) # misses
+    dec_hit <- mean(data$dec[data$ID == i & data$resp_class == "hit"]) # hits
+
+    # Create the data frame
+    data_ID[nrow(data_ID)+1,] <- c(i, dec_hit, dec_miss)
+} # END: LOOP PARTICIPANTS
+
+# Perform paired t test to compare the extent of cardiac deceleration between hits and misses
+t.test(data_ID$dec_hit, data_ID$dec_miss, paired = T)
+
+# Show effect size
+cohen.d(data_ID$dec_hit, data_ID$dec_miss, paired = T)
+
+# Show means and SD of cardiac decelerations
+mean(data_ID$dec_hit) # mean hits
+sd(data_ID$dec_hit) # SD hits
+mean(data_ID$dec_miss) # mean misses
+sd(data_ID$dec_miss) # SD misses
+
+# Reshape the data frame
+dat <- melt(data_ID, id.vars = c("ID"), measure.vars = c("dec_miss", "dec_hit"), variable.name = "time", value.name = "value")
+
+## Prepare raincloud plots (Allen, Poggiali, Whitaker, Marshall, & Kievit, 2018) https://micahallen.org/2018/03/15/introducing-raincloud-plots/
+
+# Calculate summary statistics for the plot
+lb <- function(x) mean(x) - sd(x)
+ub <- function(x) mean(x) + sd(x)
+
+sumld <- dat %>% 
+  group_by(time) %>% 
+  summarise_all(funs(mean, median, lower = lb, upper = ub))
+sumld
+
+# Specify theme of the plot
+raincloud_theme <- theme(
+
+  axis.text.x = element_text(angle = 0, vjust = 0.5),
+  panel.border = element_blank(),
+  panel.grid.minor = element_blank(),
+  panel.grid.major = element_blank(),
+  axis.line.x = element_line(colour = "black", size = 0.5, linetype = "solid"),
+  axis.ticks.y = element_blank(),
+  axis.line.y = element_blank())
+
+# Specify parameters of the plot
+cardiac_deceleration <-  ggplot(data = dat, 
+  aes(x = time, y = value, fill = time)) +
+  geom_flat_violin(position = position_nudge(x = .12, y = 0), adjust = 1,  alpha = .8) +
+  geom_vline(xintercept= 1, size = 0.5, color = "blue3", alpha = 0.3) +
+  geom_vline(xintercept= 2, size = 0.5, color = "firebrick3", alpha = 0.3) +
+   geom_boxplot(width = .1, outlier.shape = NA, alpha = 0.4, size = 0.6) +
+  geom_point(aes(y = value, color = time), size = 1.5, colour = c(rep.int("blue3", 33), rep.int("firebrick3", 33)),
+  position = position_jitter(width = .03), size = .4, alpha = 0.5) +
+  expand_limits(x = 2) +
+  guides(fill = FALSE) +
+  guides(color = FALSE) +
+  scale_x_discrete(labels= c("Misses", "Hits"), expand = c(0.2,0.0)) +
+  scale_y_continuous(limits= c(-0.3, 0.3), breaks = c(-0.3,-0.2,-0.1,0,0.1,0.2,0.3), expand = c(0.01,0.01)) +
+  labs(x = " ", y = "Cardiac deceleration (z-scores)") +
+  scale_fill_manual(values = c("blue3", "firebrick3")) +
+  coord_flip() + 
+  theme_bw() +
+  theme(axis.text=element_text(size=16, colour = "black")) +
+  theme(axis.title.x = element_text(size = 15, colour = "black", margin = margin(t = 15, r = 0, b = 0, l = 0))) + raincloud_theme
+
+# Print the plot
+cardiac_deceleration
+
+
+```
+
+
