@@ -22,6 +22,8 @@ Fluctuations in the heart’s activity can modulate the access of external stimu
 
 Data analysis:
 
-Folder "_scripts" contains the the codes used for the main and supplementary analyses. If you want to run your own preprocessing (performed in sections 1-3 of the script for analysis), please contact the corresponding author for the raw data (output from Kubios analysis for each participant). Otherwise you can load the processed data into 
+Folder "_scripts" contains the codes used for the main and supplementary analyses. If you want to run your own preprocessing (performed in the sections 1-3 of the main code: CCSomato_analysis_main.html), please contact the corresponding author for the raw data (output from Kubios analysis for each participant). Folder "_dataframes" contains preprocessed data saved as the outputs from particular sections of the code. This enables starting analysis of preprocessed data at different sections of the code by reading the releveant data frames using the prepared lines of the code at the beginnings of sections. For example, one could read "CCSomato_ECG_data(output_from_section_3)" at the beginning of section nr 4 and run the following sections or start directly from the later sections by reading outpus from sections nr 4 or 7. The same procedure regards supplementary results. Folder "_figures" contains the plots from the main manuscript and supplementry results. The codes along with their outputs can be also previewed by downloading and opening relveant html files from "_scripts". 
+
+Otherwise you can load the processed data into 
 
 
